@@ -232,7 +232,11 @@ func createTLSClient(socket net.Conn, config *APNSConfig) (net.Conn, error) {
 		return nil, err
 	}
 
-	sslSocket := openssl.Client(socket, ctx)
+	sslSocket, err := openssl.Client(socket, ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	sslSocket.SetDeadline(time.Now().Add(time.Duration(config.TlsTimeout) * time.Second))
 
 	if err := sslSocket.Handshake(); err != nil {
