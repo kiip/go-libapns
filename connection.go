@@ -26,10 +26,8 @@ type APNSConfig struct {
 	MaxPayloadSize int
 	//bytes for cert.pem : required
 	CertificateBytes []byte
-	CertificateFile  string
 	//bytes for key.pem : required
 	KeyBytes []byte
-	KeyFile  string
 	//apple gateway, defaults to "gateway.push.apple.com"
 	GatewayHost string
 	//apple gateway port, defaults to "2195"
@@ -227,8 +225,24 @@ func SocketAPNSConnection(socket net.Conn, config *APNSConfig) (*APNSConnection,
 
 func createTLSClient(socket net.Conn, config *APNSConfig) (net.Conn, error) {
 
-	ctx, err := openssl.NewCtxFromFiles(config.CertificateFile, config.KeyFile)
+	ctx, err := openssl.NewCtx()
 	if err != nil {
+		return nil, err
+	}
+
+	certificate, err := openssl.LoadCertificateFromPEM(config.CertificateBytes)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.UseCertificate(certificate); err != nil {
+		return nil, err
+	}
+
+	privateKey, err := openssl.LoadPrivateKeyFromPEM(config.KeyBytes)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.UsePrivateKey(privateKey); err != nil {
 		return nil, err
 	}
 
