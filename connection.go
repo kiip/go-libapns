@@ -5,11 +5,12 @@ package apns
 import (
 	"bytes"
 	"container/list"
-	"crypto/tls"
+	//"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/kiip/openssl"
 	"net"
 	"sync"
 	"time"
@@ -25,8 +26,10 @@ type APNSConfig struct {
 	MaxPayloadSize int
 	//bytes for cert.pem : required
 	CertificateBytes []byte
+	CertificateFile  string
 	//bytes for key.pem : required
 	KeyBytes []byte
+	KeyFile  string
 	//apple gateway, defaults to "gateway.push.apple.com"
 	GatewayHost string
 	//apple gateway port, defaults to "2195"
@@ -122,10 +125,10 @@ var APPLE_PUSH_RESPONSES = map[uint8]string{
 	6:   "INVALID_TOPIC_SIZE",
 	7:   "INVALID_PAYLOAD_SIZE",
 	8:   "INVALID_TOKEN",
-	10:  "SHUTDOWN", // apple shutdown connection
+	10:  "SHUTDOWN",              // apple shutdown connection
 	128: "INVALID_FRAME_ITEM_ID", //this is not documented, but ran across it in testing
 	CONNECTION_CLOSED_DISCONNECT: "CONNECTION CLOSED DISCONNECT", // client disconnect (not apple, used internally)
-	CONNECTION_CLOSED_UNKNOWN: "CONNECTION CLOSED UNKNOWN", // client unknown connection error (not apple, used internally)
+	CONNECTION_CLOSED_UNKNOWN:    "CONNECTION CLOSED UNKNOWN",    // client unknown connection error (not apple, used internally)
 	255: "UNKNOWN",
 }
 
@@ -223,30 +226,48 @@ func SocketAPNSConnection(socket net.Conn, config *APNSConfig) (*APNSConnection,
 }
 
 func createTLSClient(socket net.Conn, config *APNSConfig) (net.Conn, error) {
-	x509Cert, err := tls.X509KeyPair(config.CertificateBytes, config.KeyBytes)
+
+	ctx, err := openssl.NewCtxFromFiles(config.CertificateFile, config.KeyFile)
 	if err != nil {
-		//failed to validate key pair
 		return nil, err
 	}
 
-	tlsConf := &tls.Config{
-		Certificates: []tls.Certificate{x509Cert},
-		ServerName:   config.GatewayHost,
-	}
+	sslSocket := openssl.Client(socket, ctx)
+	sslSocket.SetDeadline(time.Now().Add(time.Duration(config.TlsTimeout) * time.Second))
 
-	tlsSocket := tls.Client(socket, tlsConf)
-	tlsSocket.SetDeadline(time.Now().Add(time.Duration(config.TlsTimeout) * time.Second))
-	err = tlsSocket.Handshake()
-	if err != nil {
-		//failed to handshake with tls information
+	if err := sslSocket.Handshake(); err != nil {
 		return nil, err
 	}
 
-	//hooray! we're connected
-	//reset the deadline so it doesn't fail subsequent writes
-	tlsSocket.SetDeadline(time.Time{})
+	sslSocket.SetDeadline(time.Time{})
 
-	return tlsSocket, nil
+	return sslSocket, nil
+	/*
+		x509Cert, err := tls.X509KeyPair(config.CertificateBytes, config.KeyBytes)
+		if err != nil {
+			//failed to validate key pair
+			return nil, err
+		}
+
+		tlsConf := &tls.Config{
+			Certificates: []tls.Certificate{x509Cert},
+			ServerName:   config.GatewayHost,
+		}
+
+		tlsSocket := tls.Client(socket, tlsConf)
+		tlsSocket.SetDeadline(time.Now().Add(time.Duration(config.TlsTimeout) * time.Second))
+		err = tlsSocket.Handshake()
+		if err != nil {
+			//failed to handshake with tls information
+			return nil, err
+		}
+
+		//hooray! we're connected
+		//reset the deadline so it doesn't fail subsequent writes
+		tlsSocket.SetDeadline(time.Time{})
+
+		return tlsSocket, nil
+	*/
 }
 
 //Starts connection close and send listeners
@@ -387,8 +408,8 @@ func (c *APNSConnection) sendListener(errCloseChannel chan *AppleError) {
 	var errorPayload *Payload
 	// only calculate unsent payloads if messageId is not empty
 	if appleError.ErrorCode != 0 &&
-			appleError.ErrorCode != CONNECTION_CLOSED_DISCONNECT &&
-			appleError.MessageID != 0 {
+		appleError.ErrorCode != CONNECTION_CLOSED_DISCONNECT &&
+		appleError.MessageID != 0 {
 		for e := c.inFlightPayloadBuffer.Front(); e != nil; e = e.Next() {
 			idPayloadObj := e.Value.(*idPayload)
 			if idPayloadObj.ID == appleError.MessageID {
