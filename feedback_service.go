@@ -4,11 +4,12 @@ package apns
 
 import (
 	"container/list"
-	"crypto/tls"
+	//"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/kiip/openssl"
 	"io"
 	"net"
 	"time"
@@ -50,14 +51,25 @@ const (
 //Also if unable to create a connection an error will be returned
 //Will return a list of *FeedbackResponse or error
 func ConnectToFeedbackService(config *APNSFeedbackServiceConfig) (*list.List, error) {
-	errorStrs := ""
-
-	if config.CertificateBytes == nil || config.KeyBytes == nil {
-		errorStrs += "Invalid Key/Certificate bytes\n"
+	ctx, err := openssl.NewCtx()
+	if err != nil {
+		return nil, err
 	}
 
-	if errorStrs != "" {
-		return nil, errors.New(errorStrs)
+	certificate, err := openssl.LoadCertificateFromPEM(config.CertificateBytes)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.UseCertificate(certificate); err != nil {
+		return nil, err
+	}
+
+	privateKey, err := openssl.LoadPrivateKeyFromPEM(config.KeyBytes)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.UsePrivateKey(privateKey); err != nil {
+		return nil, err
 	}
 
 	if config.GatewayPort == "" {
@@ -73,18 +85,7 @@ func ConnectToFeedbackService(config *APNSFeedbackServiceConfig) (*list.List, er
 		config.TlsTimeout = 5
 	}
 
-	x509Cert, err := tls.X509KeyPair(config.CertificateBytes, config.KeyBytes)
-	if err != nil {
-		//failed to validate key pair
-		return nil, err
-	}
-
-	tlsConf := &tls.Config{
-		Certificates: []tls.Certificate{x509Cert},
-		ServerName:   config.GatewayHost,
-	}
-
-	tcpSocket, err := net.DialTimeout("tcp",
+	socket, err := net.DialTimeout("tcp",
 		config.GatewayHost+":"+config.GatewayPort,
 		time.Duration(config.SocketTimeout)*time.Second)
 	if err != nil {
@@ -92,20 +93,23 @@ func ConnectToFeedbackService(config *APNSFeedbackServiceConfig) (*list.List, er
 		return nil, err
 	}
 
-	tlsSocket := tls.Client(tcpSocket, tlsConf)
-	tlsSocket.SetReadDeadline(time.Now().Add(time.Duration(config.TlsTimeout) * time.Second))
-	err = tlsSocket.Handshake()
+	sslSocket, err := openssl.Client(socket, ctx)
 	if err != nil {
-		//failed to handshake with tls information
 		return nil, err
 	}
+
+	sslSocket.SetDeadline(time.Now().Add(time.Duration(config.TlsTimeout) * time.Second))
+	if err := sslSocket.Handshake(); err != nil {
+		return nil, err
+	}
+	sslSocket.SetDeadline(time.Time{})
 
 	//hooray! we're connected
 
 	//let socket close itself when we're finished
-	defer tlsSocket.Close()
+	defer sslSocket.Close()
 
-	return readFromFeedbackService(tlsSocket)
+	return readFromFeedbackService(sslSocket)
 }
 
 //Read from the socket until there is no more to be read or an error occurs
